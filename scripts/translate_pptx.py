@@ -56,39 +56,50 @@ def _process_shape(shape, callback):
             _process_shape(child, callback)
 
 
-def batch_translate(texts: list[str], api_key: str) -> dict[str, str]:
-    """Translate a list of Korean strings in a single API call."""
-    unique = list(dict.fromkeys(texts))  # deduplicate, preserve order
-
+def _translate_chunk(chunk: list[str], api_key: str) -> dict[str, str]:
+    """Translate a single chunk via one API call."""
     system_prompt = (
         "You are a professional Korean-to-English translator specializing in business and consulting documents. "
         "The user will send a JSON array of Korean strings. "
-        "Return a JSON object where each key is the original Korean string and the value is the English translation. "
+        "Return a JSON object where each key is the EXACT original Korean string and the value is the English translation. "
         "Rules: keep proper nouns, company names, numbers, and English words unchanged. "
-        "Return ONLY the JSON object, no extra text."
+        "Return ONLY the JSON object, no markdown, no extra text."
     )
-
     payload = {
         "model": "solar-mini",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(unique, ensure_ascii=False)},
+            {"role": "user", "content": json.dumps(chunk, ensure_ascii=False)},
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
+        "max_tokens": 4096,
     }
-
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-
-    resp = requests.post(UPSTAGE_API_URL, json=payload, headers=headers, timeout=120)
+    resp = requests.post(UPSTAGE_API_URL, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
-
     content = resp.json()["choices"][0]["message"]["content"]
-    translation_map = json.loads(content)
-    return translation_map
+    return json.loads(content)
+
+
+def batch_translate(texts: list[str], api_key: str, chunk_size: int = 50) -> dict[str, str]:
+    """Translate all Korean strings, chunked to avoid timeouts."""
+    unique = list(dict.fromkeys(texts))  # deduplicate, preserve order
+    result = {}
+
+    chunks = [unique[i:i + chunk_size] for i in range(0, len(unique), chunk_size)]
+    print(f"Splitting {len(unique)} unique strings into {len(chunks)} chunks of ≤{chunk_size}...")
+
+    for i, chunk in enumerate(chunks, 1):
+        print(f"  Translating chunk {i}/{len(chunks)} ({len(chunk)} strings)...", end=" ", flush=True)
+        translated = _translate_chunk(chunk, api_key)
+        result.update(translated)
+        print("done")
+
+    return result
 
 
 def translate_pptx(input_path: str, output_path: str, api_key: str) -> int:
